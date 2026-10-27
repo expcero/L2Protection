@@ -81,7 +81,7 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <ModuleDefinitionFile>dsetup.def</ModuleDefinitionFile>
-      <Version>1.0.01</Version>
+      <Version>1.0</Version>
     </Link>
     <ResourceCompile>
       <ShowProgress>

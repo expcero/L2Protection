@@ -8,9 +8,29 @@
 static const wchar_t* FILE_INTERFACE_U = L"interface.u";
 static const wchar_t* FILE_INTERFACE_DAT = L"interface.xdat";
 
-//  HASHES ORIGINAIS (VOCÊ VAI GERAR)
-static const char* HASH_INTERFACE_U = "f402642f69d433283e3f3e17c9474ade689885e219e78835e6bdbe7d698dd02d";
-static const char* HASH_INTERFACE_DAT = "37159dcfb069e7cc913f3f9ddec234437febde37a08c363cce0646c767ef6948";
+// SHA-256 of the interface in C:/game/l2/system, verified 2026-10-26.
+// Keep integrity checks enabled for the matching local test client.
+static const char HASH_INTERFACE_U[] = "4ca40e2936138d9551412767c695b6e54e8f2843daf437536811705704b91019";
+static const char HASH_INTERFACE_DAT[] = "ee755d9865e548398d822493b9536a40b3f7483108b582723d89b03eeb803c55";
+static_assert(sizeof(HASH_INTERFACE_U) == 65, "interface.u SHA-256 must contain 64 characters");
+static_assert(sizeof(HASH_INTERFACE_DAT) == 65, "interface.xdat SHA-256 must contain 64 characters");
+
+void ProtectionLog(const char* event);
+
+static std::wstring ProtectedPath(const wchar_t* name)
+{
+    HMODULE module = NULL;
+    wchar_t path[MAX_PATH] = {};
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        reinterpret_cast<LPCWSTR>(&ProtectedPath), &module)) return L"";
+    DWORD length = GetModuleFileNameW(module, path, MAX_PATH);
+    if (!length || length >= MAX_PATH) return L"";
+    std::wstring full(path);
+    auto slash = full.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) return L"";
+    return full.substr(0, slash + 1) + name;
+}
 
 bool GetFileHash(const wchar_t* file, std::string& outHash)
 {
@@ -63,8 +83,9 @@ FileCheckResult VerifyProtectedFiles()
     // =====================
     // interface.u
     // =====================
-    if (!GetFileHash(FILE_INTERFACE_U, hash))
+    if (!GetFileHash(ProtectedPath(FILE_INTERFACE_U).c_str(), hash))
     {
+        ProtectionLog("files: interface.u missing or unreadable");
         result.allOk = false;
         result.fileMissing = true;
         result.fileName = FILE_INTERFACE_U;
@@ -73,6 +94,7 @@ FileCheckResult VerifyProtectedFiles()
 
     if (_stricmp(hash.c_str(), HASH_INTERFACE_U) != 0)
     {
+        ProtectionLog("files: interface.u SHA-256 mismatch");
         result.allOk = false;
         result.fileChanged = true;
         result.fileName = FILE_INTERFACE_U;
@@ -83,8 +105,9 @@ FileCheckResult VerifyProtectedFiles()
     // =====================
     // interface.dat
     // =====================
-    if (!GetFileHash(FILE_INTERFACE_DAT, hash))
+    if (!GetFileHash(ProtectedPath(FILE_INTERFACE_DAT).c_str(), hash))
     {
+        ProtectionLog("files: interface.xdat missing or unreadable");
         result.allOk = false;
         result.fileMissing = true;
         result.fileName = FILE_INTERFACE_DAT;
@@ -93,6 +116,7 @@ FileCheckResult VerifyProtectedFiles()
 
     if (_stricmp(hash.c_str(), HASH_INTERFACE_DAT) != 0)
     {
+        ProtectionLog("files: interface.xdat SHA-256 mismatch");
         result.allOk = false;
         result.fileChanged = true;
         result.fileName = FILE_INTERFACE_DAT;
@@ -100,5 +124,6 @@ FileCheckResult VerifyProtectedFiles()
         return result;
     }
 
+    ProtectionLog("files: interface integrity OK");
     return result;
 }

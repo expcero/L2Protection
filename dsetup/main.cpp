@@ -14,6 +14,40 @@
 #include <cstring>
 #include <string>
 
+// Diagnostic events only: never write account details or hardware payloads.
+void ProtectionLog(const char* event)
+{
+    const DWORD savedError = GetLastError();
+    HMODULE module = NULL;
+    wchar_t path[MAX_PATH] = {};
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        reinterpret_cast<LPCWSTR>(&ProtectionLog), &module) &&
+        GetModuleFileNameW(module, path, MAX_PATH))
+    {
+        wchar_t* slash = wcsrchr(path, L'\\');
+        if (slash && (slash - path) + 25 < MAX_PATH)
+        {
+            wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - path), L"bhwd-diagnostic.log");
+            HANDLE file = CreateFileW(path, FILE_APPEND_DATA,
+                FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS,
+                FILE_ATTRIBUTE_NORMAL, NULL);
+            if (file != INVALID_HANDLE_VALUE)
+            {
+                SYSTEMTIME time; GetLocalTime(&time);
+                char line[512];
+                int length = sprintf_s(line, "%04u-%02u-%02u %02u:%02u:%02u PID=%lu %s\r\n",
+                    time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute,
+                    time.wSecond, GetCurrentProcessId(), event);
+                DWORD written;
+                if (length > 0) WriteFile(file, line, length, &written, NULL);
+                CloseHandle(file);
+            }
+        }
+    }
+    SetLastError(savedError);
+}
+
 #include "Hook.h"
 #include "resource.h"
 #include "AntiCheat.h"
@@ -613,11 +647,14 @@ int BuildPacket(const unsigned char* in, int inLen, unsigned char* out)
 
 int __stdcall HookConnect(SOCKET s, const sockaddr* name, int len)
 {
+    if (!name || len < sizeof(sockaddr_in) || name->sa_family != AF_INET)
+        return true_connect(s, name, len);
     sockaddr_in addr = *(sockaddr_in*)name;
     unsigned short port = ntohs(addr.sin_port);
 
     if (port == LOGIN_PORT || port == GAME_PORT)
     {
+        ProtectionLog(port == GAME_PORT ? "connect: Game detected" : "connect: Login detected");
         inet_pton(AF_INET, g_ServerIP, &addr.sin_addr);
 
         if (port == GAME_PORT)
@@ -633,9 +670,18 @@ int WSAAPI HookSend(SOCKET s, const char* buf, int len, int flags)
     {
         if (IsProtocolVersion((unsigned char*)buf, len) && !HasHWID((unsigned char*)buf, len))
         {
+            ProtectionLog("send: ProtocolVersion detected; adding BHWD");
             unsigned char newBuf[4096];
+            if (len <= 0 || static_cast<size_t>(len) + 8 + strlen(g_FinalPayload) + 1 > sizeof(newBuf))
+            {
+                ProtectionLog("send: packet exceeds BHWD buffer; rejected");
+                WSASetLastError(WSAEMSGSIZE);
+                return SOCKET_ERROR;
+            }
             int newLen = BuildPacket((unsigned char*)buf, len, newBuf);
-            return true_send(s, (char*)newBuf, newLen, flags);
+            int result = true_send(s, (char*)newBuf, newLen, flags);
+            ProtectionLog(result == newLen ? "send: BHWD packet sent" : "send: BHWD packet failed or partial");
+            return result;
         }
     }
 
@@ -645,14 +691,20 @@ int WSAAPI HookSend(SOCKET s, const char* buf, int len, int flags)
 void InstallHooks()
 {
     HMODULE ws2 = GetModuleHandleA("ws2_32.dll");
+    if (!ws2) ws2 = LoadLibraryW(L"ws2_32.dll");
     if (!ws2)
+    {
+        ProtectionLog("hooks: Winsock unavailable");
         return;
+    }
 
     if (!true_connect)
         true_connect = (_connect)splice((unsigned char*)GetProcAddress(ws2, "connect"), HookConnect);
 
     if (!true_send)
         true_send = (_send)splice((unsigned char*)GetProcAddress(ws2, "send"), HookSend);
+    ProtectionLog(true_connect ? "hooks: connect installed" : "hooks: connect FAILED");
+    ProtectionLog(true_send ? "hooks: send installed" : "hooks: send FAILED");
 }
 
 DWORD WINAPI OwnershipMonitorThread(LPVOID)
@@ -689,10 +741,12 @@ DWORD WINAPI OwnershipMonitorThread(LPVOID)
 }
 DWORD WINAPI BootstrapThread(LPVOID)
 {
+    ProtectionLog("bootstrap: DLL loaded; diagnostic build 2026-10-26");
     AntiCheatSetModuleHandle(g_ModuleHandle);
 
     if (!ClientInstanceManager::Acquire())
     {
+        ProtectionLog("bootstrap: client instance limit reached");
         ShowProtectionMessageTimed(L"Client limit reached", 5);
         KillProcessGracefully(GetCurrentProcessId());
         ExitProcess(0);
@@ -705,6 +759,7 @@ DWORD WINAPI BootstrapThread(LPVOID)
     Sleep(500);
 
     BuildPayload();
+    ProtectionLog("bootstrap: payload prepared");
     InstallHooks();
    
     AccountVault_Initialize();
